@@ -1042,6 +1042,19 @@ app.post('/api/games/live-playability', async (req, res) => {
 
   const ai = getGeminiClient(customKey || (req.headers['x-gemini-api-key'] as string));
   if (!ai) {
+    const groqPrompt = 'Estimate PC/mobile game playability conservatively for game "' + gameTitle +
+      '" on hardware ' + JSON.stringify(userSpecs || {}) +
+      '. Do not claim web research or measured benchmarks. Return JSON only with gameTitle, isPlayable, verdictRating, status, expectedFps, recommendedSettings, realWorldSummary, mobileNote. Label FPS as estimated.';
+    try {
+      const groqText = await fetchGroqCompletion(groqPrompt, 500);
+      const match = groqText?.match(/\{[\s\S]*\}/);
+      if (match) {
+        const data = JSON.parse(match[0]);
+        return res.json({ success: true, data, provider: 'groq', isEstimated: true });
+      }
+    } catch (err: any) {
+      console.warn('[Groq] Playability fallback skipped:', err?.message);
+    }
     return res.json({
       success: true,
       data: {
@@ -1051,7 +1064,7 @@ app.post('/api/games/live-playability', async (req, res) => {
         status: 'possible_with_compromises',
         expectedFps: '45-60 FPS (Estimated)',
         recommendedSettings: 'Dynamic resolution scaling / medium settings',
-        realWorldSummary: 'Calculated using offline benchmark heuristics.',
+        realWorldSummary: 'Calculated using offline benchmark heuristics; actual performance may differ.',
       },
       isFallback: true,
     });
@@ -1116,6 +1129,16 @@ Respond strictly with valid JSON:
   } catch (err: any) {
     console.error('Live playability check failed:', err?.message);
     const isQuota = isQuotaOrRateLimitError(err);
+    try {
+      const groqPrompt = 'Estimate playability conservatively for "' + gameTitle + '" on ' +
+        JSON.stringify(userSpecs || {}) +
+        '. No claimed live research or measured FPS. Return JSON only with gameTitle, isPlayable, verdictRating, status, expectedFps, recommendedSettings, realWorldSummary, mobileNote. Label FPS as estimated.';
+      const groqText = await fetchGroqCompletion(groqPrompt, 500);
+      const match = groqText?.match(/\{[\s\S]*\}/);
+      if (match) return res.json({ success: true, data: JSON.parse(match[0]), provider: 'groq', isEstimated: true, isQuotaExceeded: isQuota });
+    } catch (groqErr: any) {
+      console.warn('[Groq] Playability fallback after Gemini error skipped:', groqErr?.message);
+    }
     return res.json({
       success: true,
       data: {
@@ -1123,7 +1146,7 @@ Respond strictly with valid JSON:
         isPlayable: true,
         verdictRating: 'Estimated Playable',
         status: 'possible_with_compromises',
-        expectedFps: '40-55 FPS @ 1080p Low/Med',
+        expectedFps: '40-55 FPS @ 1080p Low/Med (estimate)',
         recommendedSettings: 'Dynamic resolution scaling enabled',
         realWorldSummary: 'Offline estimation derived from component performance scores.',
       },
@@ -2277,6 +2300,15 @@ app.post('/api/hardware/online-review', async (req, res) => {
 
   const ai = getGeminiClient(customKey || (req.headers['x-gemini-api-key'] as string));
   if (!ai) {
+    const groqPrompt = 'Review hardware CPU "' + (cpuName || 'Unknown') + '" and GPU "' + (gpuName || 'Unknown') +
+      '". Give conservative general strengths, weaknesses and an overall verdict. Do not invent benchmark scores or claim live research. Return JSON only with summary, strengths, weaknesses, verdictRating.';
+    try {
+      const groqText = await fetchGroqCompletion(groqPrompt, 450);
+      const match = groqText?.match(/\{[\s\S]*\}/);
+      if (match) return res.json({ success: true, data: JSON.parse(match[0]), provider: 'groq' });
+    } catch (err: any) {
+      console.warn('[Groq] Hardware review fallback skipped:', err?.message);
+    }
     return res.json({
       success: true,
       data: getFallbackHardwareReview(cpuName, gpuName),
@@ -2316,14 +2348,23 @@ Format as JSON:
   } catch (err: any) {
     console.error('Online hardware review failed, activating fallback:', err?.message);
     const isQuota = isQuotaOrRateLimitError(err);
+    try {
+      const groqPrompt = 'Give a conservative hardware review for CPU "' + (cpuName || 'Unknown') + '" and GPU "' +
+        (gpuName || 'Unknown') + '". Do not invent scores or claim live research. Return JSON only with summary, strengths, weaknesses, verdictRating.';
+      const groqText = await fetchGroqCompletion(groqPrompt, 450);
+      const match = groqText?.match(/\{[\s\S]*\}/);
+      if (match) return res.json({ success: true, data: JSON.parse(match[0]), provider: 'groq', isQuotaExceeded: isQuota });
+    } catch (groqErr: any) {
+      console.warn('[Groq] Hardware review fallback after Gemini error skipped:', groqErr?.message);
+    }
     return res.json({
       success: true,
       data: getFallbackHardwareReview(cpuName, gpuName),
       isFallback: true,
       isQuotaExceeded: isQuota,
       notice: isQuota
-        ? 'AI rate limit reached (HTTP 429). Displaying verified benchmark heuristics.'
-        : 'Displaying benchmark heuristics.',
+        ? 'AI rate limit reached. Displaying offline benchmark heuristics.'
+        : 'Displaying offline benchmark heuristics.',
     });
   }
 });
