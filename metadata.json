@@ -1,0 +1,8 @@
+{
+  "name": "Remix SystemInsight",
+  "description": "Instantly analyze your computer\u0027s hardware and receive a personalized report explaining what your PC can actually handle.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

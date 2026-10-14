@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Saved rigs collection: allow public read, allow create, allow owner updates
+    match /saved_rigs/{rigId} {
+      allow read: if true;
+      allow create: if request.resource.data.userId is string && request.resource.data.rigName is string;
+      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+
+    // System scans: allow public read and create diagnostic scan logs
+    match /system_scans/{scanId} {
+      allow read, create: if true;
+      allow update, delete: if false;
+    }
+  }
+}

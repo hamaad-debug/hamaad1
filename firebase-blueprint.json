@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "SavedRig": {
+      "title": "SavedRig",
+      "description": "User saved hardware configuration or benchmark profile",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the saved configuration"
+        },
+        "userId": {
+          "type": "string",
+          "description": "ID of the user who saved the rig"
+        },
+        "rigName": {
+          "type": "string",
+          "description": "Custom title or label given to the rig"
+        },
+        "formFactor": {
+          "type": "string",
+          "description": "Device category: desktop, laptop, phone, tablet, or mini_pc"
+        },
+        "cpuName": {
+          "type": "string",
+          "description": "Processor model name"
+        },
+        "gpuName": {
+          "type": "string",
+          "description": "Graphics card model name"
+        },
+        "ramGb": {
+          "type": "number",
+          "description": "Memory capacity in gigabytes"
+        },
+        "storageType": {
+          "type": "string",
+          "description": "Drive architecture: nvme_ssd, sata_ssd, or hdd"
+        },
+        "specsJson": {
+          "type": "string",
+          "description": "Serialized full UserSpecs object"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO date string when the rig was saved"
+        }
+      },
+      "required": ["id", "userId", "rigName", "formFactor", "cpuName", "gpuName", "ramGb", "createdAt"]
+    },
+    "SystemScan": {
+      "title": "SystemScan",
+      "description": "Persistent log of an automated hardware diagnostic scan",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique scan session ID"
+        },
+        "userId": {
+          "type": "string",
+          "description": "User ID of the session"
+        },
+        "detectedCategory": {
+          "type": "string",
+          "description": "Detected device type: phone, laptop, desktop, or tablet"
+        },
+        "confidence": {
+          "type": "string",
+          "description": "Classification confidence score"
+        },
+        "logicalCores": {
+          "type": "number",
+          "description": "Detected CPU logical thread count"
+        },
+        "deviceMemoryGb": {
+          "type": "number",
+          "description": "Reported browser device memory in GB"
+        },
+        "renderer": {
+          "type": "string",
+          "description": "WebGL unmasked renderer string"
+        },
+        "screenResolution": {
+          "type": "string",
+          "description": "Display resolution width x height"
+        },
+        "hasBattery": {
+          "type": "boolean",
+          "description": "Whether battery manager hardware was present"
+        },
+        "batteryPercent": {
+          "type": "number",
+          "description": "Battery charge percentage at time of scan"
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Unix millisecond timestamp"
+        }
+      },
+      "required": ["id", "detectedCategory", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/saved_rigs/{rigId}": {
+      "schema": {
+        "$ref": "SavedRig"
+      },
+      "description": "Collection of user-saved PC, Laptop, and Smartphone configurations"
+    },
+    "/system_scans/{scanId}": {
+      "schema": {
+        "$ref": "SystemScan"
+      },
+      "description": "Public diagnostic scans and device classification logs"
+    }
+  }
+}
