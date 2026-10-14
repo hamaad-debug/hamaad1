@@ -2171,10 +2171,11 @@ const phoneSpecsCache = new Map<string, any>();
 // Data licensed under Creative Commons Attribution-ShareAlike 4.0 (CC BY-SA 4.0)
 // Free static JSON dump served via GitHub Pages
 // ==============================================================================
-const TECHAPI_STATIC_BASE = 'https://gettechapi.github.io/TechEngine/v1';
+const TECHAPI_STATIC_BASE = 'https://gettechapi.github.io/TechAPI/v1';
 let techApiSmartphonesCatalog: Array<{ slug: string; name: string }> = [];
 let isTechApiCatalogLoading = false;
 let techApiCatalogLoaded = false;
+let techApiCatalogLastError: string | null = null;
 
 // Preload or fetch TechAPI smartphone catalog in background without blocking server startup
 async function loadTechApiCatalog(): Promise<void> {
@@ -2190,10 +2191,12 @@ async function loadTechApiCatalog(): Promise<void> {
           name: r.name,
         }));
         techApiCatalogLoaded = true;
+        techApiCatalogLastError = null;
         console.log(`[TechAPI] Successfully loaded ${techApiSmartphonesCatalog.length} smartphone entries into catalog index.`);
       }
     }
   } catch (err: any) {
+    techApiCatalogLastError = err?.message || 'Unknown catalog fetch error';
     console.warn('[TechAPI] Background catalog fetch notice:', err?.message);
   } finally {
     isTechApiCatalogLoading = false;
@@ -2369,6 +2372,22 @@ async function lookupPhoneInTechApi(cleanModel: string): Promise<any | null> {
 
   return null;
 }
+
+// Diagnostic endpoint to confirm whether the public TechAPI static dataset is reachable.
+app.get('/api/hardware/techapi-status', async (_req, res) => {
+  if (!techApiCatalogLoaded) {
+    await loadTechApiCatalog();
+  }
+  return res.status(techApiCatalogLoaded ? 200 : 503).json({
+    provider: 'TechAPI',
+    baseUrl: TECHAPI_STATIC_BASE,
+    catalogLoaded: techApiCatalogLoaded,
+    smartphoneCount: techApiSmartphonesCatalog.length,
+    lastError: techApiCatalogLastError,
+    attribution: 'Data from TechAPI',
+    license: 'CC BY-SA 4.0',
+  });
+});
 
 // Autocomplete phone search endpoint from TechAPI catalog
 app.get('/api/hardware/search-phones', async (req, res) => {
