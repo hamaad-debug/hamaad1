@@ -502,6 +502,172 @@ async function fetchSteamGameOnline(query: string, userSpecs: any): Promise<any 
   }
 }
 
+
+// Optional multi-source game metadata providers. Secrets stay server-side.
+type ExternalGameMetadata = {
+  title: string;
+  genre?: string;
+  releaseYear?: number;
+  criticScore?: string;
+  reviewSummary?: string;
+  overview?: string;
+  coverImage?: string;
+  externalSources: Array<{ web: { title: string; uri: string } }>;
+};
+let igdbTokenCache: { token: string; expiresAt: number } | null = null;
+
+async function fetchRawgGame(query: string): Promise<ExternalGameMetadata | null> {
+  const key = process.env.RAWG_API_KEY?.trim();
+  if (!key) return null;
+  try {
+    const url = new URL('https://api.rawg.io/api/games');
+    url.searchParams.set('key', key);
+    url.searchParams.set('search', query);
+    url.searchParams.set('page_size', '5');
+    const res = await fetch(url, { headers: { 'User-Agent': 'RigCompassHardwareApp/1.0' }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const q = normalizeTitle(query);
+    const games = Array.isArray(data.results) ? data.results : [];
+    const match = games.find((g: any) => normalizeTitle(g.name || '') === q) || games[0];
+    if (!match?.name) return null;
+    return {
+      title: match.name,
+      genre: Array.isArray(match.genres) ? match.genres.map((g: any) => g.name).filter(Boolean).join(' · ') : undefined,
+      releaseYear: Number.parseInt(String(match.released || '').slice(0, 4), 10) || undefined,
+      criticScore: match.metacritic ? String(match.metacritic) + '/100 Metacritic' : (match.rating ? 'RAWG rating ' + match.rating + '/5' : undefined),
+      reviewSummary: match.name + (match.released ? ' released ' + match.released : '') + ' — metadata supplied by RAWG.',
+      coverImage: match.background_image || undefined,
+      externalSources: [{ web: { title: 'RAWG game database', uri: match.slug ? 'https://rawg.io/games/' + encodeURIComponent(match.slug) : 'https://rawg.io' } }],
+    };
+  } catch (err: any) {
+    console.warn('[RAWG] Lookup skipped:', err?.message);
+    return null;
+  }
+}
+
+async function getIgdbAccessToken(): Promise<string | null> {
+  const clientId = process.env.TWITCH_CLIENT_ID?.trim();
+  const clientSecret = process.env.TWITCH_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return null;
+  if (igdbTokenCache && igdbTokenCache.expiresAt > Date.now() + 60000) return igdbTokenCache.token;
+  try {
+    const url = new URL('https://id.twitch.tv/oauth2/token');
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('client_secret', clientSecret);
+    url.searchParams.set('grant_type', 'client_credentials');
+    const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    if (!data.access_token) return null;
+    igdbTokenCache = { token: data.access_token, expiresAt: Date.now() + Math.max(60, Number(data.expires_in || 3600)) * 1000 };
+    return data.access_token;
+  } catch (err: any) {
+    console.warn('[IGDB] Token request skipped:', err?.message);
+    return null;
+  }
+}
+
+async function fetchIgdbGame(query: string): Promise<ExternalGameMetadata | null> {
+  const clientId = process.env.TWITCH_CLIENT_ID?.trim();
+  const token = await getIgdbAccessToken();
+  if (!clientId || !token) return null;
+  try {
+    const safeQuery = query.replace(/["\\]/g, ' ').trim().slice(0, 120);
+    const res = await fetch('https://api.igdb.com/v4/games', {
+      method: 'POST',
+      headers: { 'Client-ID': clientId, Authorization: 'Bearer ' + token, 'Content-Type': 'text/plain' },
+      body: 'search "' + safeQuery + '"; fields name,summary,first_release_date,genres.name,cover.url,rating,rating_count,url; limit 5;',
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const q = normalizeTitle(query);
+    const games = Array.isArray(data) ? data : [];
+    const match = games.find((g: any) => normalizeTitle(g.name || '') === q) || games[0];
+    if (!match?.name) return null;
+    const cover = match.cover?.url ? 'https:' + match.cover.url.replace('t_thumb', 't_cover_big') : undefined;
+    return {
+      title: match.name,
+      genre: Array.isArray(match.genres) ? match.genres.map((g: any) => g.name).filter(Boolean).join(' · ') : undefined,
+      releaseYear: match.first_release_date ? new Date(match.first_release_date * 1000).getUTCFullYear() : undefined,
+      criticScore: typeof match.rating === 'number' ? 'IGDB rating ' + Math.round(match.rating) + '/100' : undefined,
+      reviewSummary: match.summary || undefined,
+      overview: match.summary || undefined,
+      coverImage: cover,
+      externalSources: [{ web: { title: 'IGDB game database', uri: match.url || 'https://www.igdb.com' } }],
+    };
+  } catch (err: any) {
+    console.warn('[IGDB] Lookup skipped:', err?.message);
+    return null;
+  }
+}
+
+async function fetchPcGamingWikiGame(query: string): Promise<ExternalGameMetadata | null> {
+  try {
+    const headers = { 'User-Agent': 'RigCompassHardwareApp/1.0 (game metadata lookup)' };
+    const searchUrl = new URL('https://www.pcgamingwiki.com/w/api.php');
+    searchUrl.searchParams.set('action', 'opensearch');
+    searchUrl.searchParams.set('search', query);
+    searchUrl.searchParams.set('limit', '5');
+    searchUrl.searchParams.set('redirects', 'resolve');
+    searchUrl.searchParams.set('format', 'json');
+    const searchRes = await fetch(searchUrl, { headers, signal: AbortSignal.timeout(8000) });
+    if (!searchRes.ok) return null;
+    const searchData: any = await searchRes.json();
+    const titles: string[] = Array.isArray(searchData?.[1]) ? searchData[1] : [];
+    const urls: string[] = Array.isArray(searchData?.[3]) ? searchData[3] : [];
+    if (!titles.length) return null;
+    const q = normalizeTitle(query);
+    const idx = titles.findIndex((title) => normalizeTitle(title) === q);
+    const chosen = idx >= 0 ? idx : 0;
+    return {
+      title: titles[chosen],
+      externalSources: [{ web: { title: 'PCGamingWiki compatibility and fixes', uri: urls[chosen] || 'https://www.pcgamingwiki.com/wiki/' + encodeURIComponent(titles[chosen].replace(/ /g, '_')) } }],
+    };
+  } catch (err: any) {
+    console.warn('[PCGamingWiki] Lookup skipped:', err?.message);
+    return null;
+  }
+}
+
+async function fetchExternalGameMetadata(query: string): Promise<ExternalGameMetadata[]> {
+  const results = await Promise.allSettled([fetchRawgGame(query), fetchIgdbGame(query), fetchPcGamingWikiGame(query)]);
+  const found = results.flatMap((r) => r.status === 'fulfilled' && r.value ? [r.value] : []);
+  const q = normalizeTitle(query);
+  return found.sort((a, b) => Number(normalizeTitle(b.title) === q) - Number(normalizeTitle(a.title) === q));
+}
+
+async function fetchGroqCompletion(prompt: string, maxTokens = 900): Promise<string | null> {
+  const apiKey = process.env.GROQ_API_KEY?.trim();
+  if (!apiKey) return null;
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: process.env.GROQ_MODEL?.trim() || 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: 'Be accurate and conservative. Never invent benchmark results or claim a source was checked unless its data is provided. Return only valid JSON when requested.' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.1,
+        max_tokens: maxTokens,
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) {
+      console.warn('[Groq] Completion skipped with status:', res.status);
+      return null;
+    }
+    const data: any = await res.json();
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch (err: any) {
+    console.warn('[Groq] Completion skipped:', err?.message);
+    return null;
+  }
+}
+
 // Online Game Search & Requirements API with Web Grounding + Live Hardware Compatibility
 app.post('/api/games/online-search', async (req, res) => {
   const { query, userSpecs, apiKey: customKey } = req.body;
@@ -604,33 +770,99 @@ app.post('/api/games/online-search', async (req, res) => {
     });
   }
 
-  // 3. Query 100% Free Steam Store Official API (150,000+ games, 0 quota, 0 cost)
-  try {
-    const steamGame = await fetchSteamGameOnline(cleanQuery, userSpecs);
-    if (steamGame) {
-      const steamRecord = {
-        data: steamGame,
-        sources: [{ web: { title: 'Steam Official PC Game Database', uri: 'https://store.steampowered.com' } }],
-        timestamp: Date.now(),
-      };
-      gameSpecsCache.set(normQuery, steamRecord);
-      if (steamGame.livePlayability) {
-        livePlayabilityCache.set(playabilityCacheKey, {
-          data: steamGame.livePlayability,
-          sources: steamRecord.sources,
-          timestamp: Date.now(),
-        });
-      }
-      return res.json({
-        success: true,
-        data: steamGame,
-        sources: steamRecord.sources,
-        isSteam: true,
-        notice: 'Loaded official PC requirements from Steam Store API ($0 cost, 0 key required).',
-      });
+  // Query Steam and optional metadata providers in parallel. Steam remains preferred for requirements.
+  const [steamGame, externalGames] = await Promise.all([
+    fetchSteamGameOnline(cleanQuery, userSpecs).catch((err) => {
+      console.warn('[Steam] Lookup skipped:', err?.message);
+      return null;
+    }),
+    fetchExternalGameMetadata(cleanQuery),
+  ]);
+  const externalSources = externalGames.flatMap((game) => game.externalSources);
+  const bestExternal = externalGames[0];
+
+  if (steamGame) {
+    const enrichedSteamGame = {
+      ...steamGame,
+      genre: steamGame.genre || bestExternal?.genre || 'Unknown',
+      releaseYear: steamGame.releaseYear || bestExternal?.releaseYear,
+      criticScore: steamGame.criticScore || bestExternal?.criticScore || 'Not available from connected sources',
+      reviewSummary: steamGame.reviewSummary || bestExternal?.reviewSummary,
+      overview: steamGame.overview || bestExternal?.overview,
+      coverImage: steamGame.coverImage || bestExternal?.coverImage,
+      externalSources,
+      dataAttribution: externalGames.flatMap((game) => game.externalSources.map((source) => source.web.title)),
+    };
+    const sources = [{ web: { title: 'Steam Store', uri: 'https://store.steampowered.com' } }, ...externalSources];
+    gameSpecsCache.set(normQuery, { data: enrichedSteamGame, sources, timestamp: Date.now() });
+    if (enrichedSteamGame.livePlayability) {
+      livePlayabilityCache.set(playabilityCacheKey, { data: enrichedSteamGame.livePlayability, sources, timestamp: Date.now() });
     }
-  } catch (steamErr) {
-    console.warn('Steam Store API lookup skipped:', steamErr);
+    return res.json({
+      success: true,
+      data: enrichedSteamGame,
+      sources,
+      isSteam: true,
+      providerResults: externalGames.length,
+      notice: 'Requirements come from Steam where available; metadata is enriched from configured game databases.',
+    });
+  }
+
+  // If Steam has no record, use metadata providers and optional AI enrichment.
+  if (bestExternal) {
+    const ai = getGeminiClient(customKey || (req.headers['x-gemini-api-key'] as string));
+    const providerSummary = externalGames.map((game) => ({
+      title: game.title, genre: game.genre, releaseYear: game.releaseYear,
+      criticScore: game.criticScore, overview: game.overview, sources: game.externalSources,
+    }));
+    const prompt = 'Build a conservative PC game requirements record for "' + query.trim() +
+      '" using only the provider metadata below plus your own knowledge. Do not claim live benchmarks unless supported. If requirements or benchmark numbers are uncertain, mark them as estimates. Hardware: ' +
+      JSON.stringify(userSpecs || {}) + '. Provider data: ' + JSON.stringify(providerSummary) +
+      '. Return JSON with title, genre, releaseYear, isFreeToPlay, criticScore, reviewSummary, overview, minCpu, recCpu, minCpuScore, recCpuScore, minGpu, recGpu, minGpuScore, recGpuScore, minRamGb, recRamGb, minVramGb, recVramGb, storageGb, requiresSsd, engineNotes, optimizationTips, livePlayability. Include livePlayability fields isPlayable, verdictRating, status, expectedFps, recommendedSettings, realWorldSummary. Never present guessed FPS as measured results.';
+    let generated: any = null;
+    try {
+      const groqText = await fetchGroqCompletion(prompt, 1000);
+      if (groqText) {
+        const match = groqText.match(/\{[\s\S]*\}/);
+        if (match) generated = JSON.parse(match[0]);
+      }
+    } catch {}
+    if (!generated && ai) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+          config: { tools: [{ googleSearch: {} }], thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 1000, temperature: 0.1 },
+        });
+        const match = (response.text || '').match(/\{[\s\S]*\}/);
+        if (match) generated = JSON.parse(match[0]);
+      } catch (err: any) {
+        console.warn('[Game providers] AI enrichment skipped:', err?.message);
+      }
+    }
+    const merged = {
+      ...bestExternal,
+      ...(generated || {}),
+      title: generated?.title || bestExternal.title,
+      genre: generated?.genre || bestExternal.genre || 'Unknown',
+      releaseYear: generated?.releaseYear || bestExternal.releaseYear,
+      criticScore: generated?.criticScore || bestExternal.criticScore || 'Not available from connected sources',
+      reviewSummary: generated?.reviewSummary || bestExternal.reviewSummary || bestExternal.overview || 'Metadata returned by connected game databases.',
+      overview: generated?.overview || bestExternal.overview || bestExternal.reviewSummary || '',
+      coverImage: bestExternal.coverImage,
+      requirementsConfidence: generated ? 'AI-enriched; verify publisher requirements' : 'Metadata only; system requirements not confirmed',
+      externalSources,
+    };
+    const sources = externalSources.length ? externalSources : bestExternal.externalSources;
+    gameSpecsCache.set(normQuery, { data: merged, sources, timestamp: Date.now() });
+    return res.json({
+      success: true,
+      data: merged,
+      sources,
+      providerResults: externalGames.length,
+      isPartialMetadata: !generated,
+      notice: generated ? 'Game metadata combined with AI-enriched requirements; verify estimates.' : 'Found game metadata, but no connected provider supplied verified PC requirements.',
+    });
   }
 
   // 4. Local Database Fallback
@@ -2372,6 +2604,23 @@ async function lookupPhoneInTechApi(cleanModel: string): Promise<any | null> {
 
   return null;
 }
+
+// Reports configured integrations without exposing API keys or secrets.
+app.get('/api/integrations/status', (_req, res) => {
+  return res.json({
+    providers: {
+      steamStore: { configured: true, type: 'public endpoint' },
+      techApi: { configured: true, type: 'public static dataset', catalogLoaded: techApiCatalogLoaded, smartphoneCount: techApiSmartphonesCatalog.length },
+      gemini: { configured: Boolean(process.env.GEMINI_API_KEY), type: 'AI / search grounding' },
+      groq: { configured: Boolean(process.env.GROQ_API_KEY), type: 'AI fallback' },
+      rawg: { configured: Boolean(process.env.RAWG_API_KEY), type: 'game metadata' },
+      igdb: { configured: Boolean(process.env.TWITCH_CLIENT_ID && process.env.TWITCH_CLIENT_SECRET), type: 'game metadata' },
+      pcGamingWiki: { configured: true, type: 'public community compatibility wiki; rate limited' },
+      benchmarkProviders: { configured: false, note: 'PassMark, Geekbench and TechPowerUp are not wired as direct public APIs. Use authorized sources or clearly labeled reference data; do not scrape restricted services.' },
+    },
+    secretsAreServerSide: true,
+  });
+});
 
 // Diagnostic endpoint to confirm whether the public TechAPI static dataset is reachable.
 app.get('/api/hardware/techapi-status', async (_req, res) => {
